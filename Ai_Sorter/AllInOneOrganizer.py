@@ -7,11 +7,9 @@ import sys
 # ==========================================
 # DEFAULT CONFIGURATION
 # ==========================================
-# These are used if no .env file is found
 DEFAULT_IGNORED_FOLDERS = {}
-DEFAULT_IGNORED_FILES = {}
+DEFAULT_IGNORED_FILES = {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
 
-# Globals to be populated
 IGNORED_FOLDERS = DEFAULT_IGNORED_FOLDERS
 IGNORED_FILES = DEFAULT_IGNORED_FILES
 
@@ -21,10 +19,7 @@ IGNORED_FILES = DEFAULT_IGNORED_FILES
 
 def load_config_from_env():
     """
-    Loads ignored folders/files from a .env file in the current directory.
-    Expected format:
-    IGNORED_FOLDERS=folder1,folder2
-    IGNORED_FILES=file1,file2
+    Loads ignored folders/files from a .env file.
     """
     global IGNORED_FOLDERS, IGNORED_FILES
     env_path = '.env'
@@ -38,71 +33,84 @@ def load_config_from_env():
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
+                if not line or line.startswith('#'): continue
                 
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
-                    # Split by comma and clean whitespace
                     items = {item.strip() for item in value.split(',') if item.strip()}
                     
                     if key == 'IGNORED_FOLDERS':
                         IGNORED_FOLDERS = items
-                        print(f"  -> Custom IGNORED_FOLDERS loaded ({len(items)} items)")
                     elif key == 'IGNORED_FILES':
                         IGNORED_FILES = items
-                        print(f"  -> Custom IGNORED_FILES loaded ({len(items)} items)")
     except Exception as e:
         print(f"[WARNING] Error reading .env file: {e}")
 
 def copy_to_clipboard(text):
     """
-    Copies text to the clipboard using the Windows 'clip' command.
-    Fallback logic included for non-Windows or failures.
+    Copies text to clipboard using Windows 'clip' or generic fallback.
     """
     try:
-        # This uses the Windows 'clip' command
         process = subprocess.Popen('clip', stdin=subprocess.PIPE, shell=True)
-        process.communicate(input=text.encode('utf-16')) # utf-16 usually required for clip
-        print("\n[SUCCESS] The AI Prompt has been copied to your clipboard automatically!")
+        process.communicate(input=text.encode('utf-16'))
+        print("\n[SUCCESS] AI Prompt copied to clipboard!")
     except Exception as e:
-        print(f"\n[NOTICE] Could not auto-copy to clipboard ({e}).")
-        print("Please scroll up and copy the prompt manually.")
+        print(f"\n[NOTICE] Could not auto-copy ({e}). Please copy manually.")
 
-def generate_prompt_string(root_path):
+def generate_prompt_string(root_path, only_folders=False):
     """
-    Scans the directory and builds the string to send to the AI.
+    Scans directory and selects one of two prompts based on only_folders mode.
     """
     output = []
     
-    # 1. The Instructions for the AI
-    output.append("Instructions for the AI:")
-    output.append("1. Analyze the file structure below.")
-    output.append("2. Suggest a better file organization/sorting strategy.")
-    output.append("3. OUTPUT ONLY A RAW JSON OBJECT (no markdown formatting, no explanations outside the JSON).")
-    output.append("4. The JSON must follow this exact schema so my Python script can read it:")
-    output.append("")
-    output.append("{")
-    output.append('    "moves": [')
-    output.append('        {')
-    output.append('            "source": "path/to/current/file.ext",')
-    output.append('            "destination": "path/to/new/folder/file.ext",')
-    output.append('            "reason": "Short explanation why"')
-    output.append('        }')
-    output.append('    ]')
-    output.append("}")
-    output.append("")
-    output.append("If a file should stay, do not include it. Ensure destination folders are logical.")
+    # ==========================================
+    # PROMPT SELECTION LOGIC
+    # ==========================================
+    if only_folders:
+        # --- PROMPT A: FOLDERS ONLY (APP/PROJECT MOVING) ---
+        output.append("Instructions for the AI:")
+        output.append("1. Analyze the FOLDER structure below (Files are hidden).")
+        output.append("2. This is an 'App/Project Organizer'. Focus on grouping folder hierarchies.")
+        output.append("3. Group related folders (e.g., move 'Adobe Photoshop' and 'Figma' into a 'Design Tools' folder).")
+        output.append("4. OUTPUT ONLY A RAW JSON OBJECT (no markdown).")
+        output.append("5. Use this JSON schema:")
+        output.append("{")
+        output.append('    "moves": [')
+        output.append('        {')
+        output.append('            "source": "Folder_Name",')
+        output.append('            "destination": "Category_Folder/Folder_Name",')
+        output.append('            "reason": "Grouping design apps together"')
+        output.append('        }')
+        output.append('    ]')
+        output.append("}")
+    else:
+        # --- PROMPT B: EVERYTHING (FILE SORTING) ---
+        output.append("Instructions for the AI:")
+        output.append("1. Analyze the file structure below.")
+        output.append("2. Suggest a file organization strategy (group by extension, date, or context).")
+        output.append("3. OUTPUT ONLY A RAW JSON OBJECT (no markdown).")
+        output.append("4. Use this JSON schema:")
+        output.append("{")
+        output.append('    "moves": [')
+        output.append('        {')
+        output.append('            "source": "path/to/file.png",')
+        output.append('            "destination": "Images/file.png",')
+        output.append('            "reason": "Moving images to image folder"')
+        output.append('        }')
+        output.append('    ]')
+        output.append("}")
+
     output.append("-" * 50)
-    output.append("FILE STRUCTURE TO ANALYZE:")
-    output.append("")
+    output.append("CURRENT STRUCTURE:")
     output.append(f"Root: {os.path.abspath(root_path)}")
     output.append("=" * 50)
 
-    # 2. The File Tree
+    # ==========================================
+    # FILE TREE GENERATION
+    # ==========================================
     for root, dirs, files in os.walk(root_path):
-        # Modify dirs in-place to skip ignored folders
+        # Skip ignored folders
         dirs[:] = [d for d in dirs if d not in IGNORED_FOLDERS]
 
         level = root.replace(root_path, '').count(os.sep)
@@ -113,49 +121,50 @@ def generate_prompt_string(root_path):
         
         output.append(f"{indent}[{subdir}/]")
         
+        # If in 'Only Folders' mode, we stop here and don't list files
+        if only_folders:
+            continue
+
+        # Otherwise list files
         subindent = '    ' * (level + 1)
         for file in files:
-            # Skip this script itself, the .env file, and ignored files
             if file == os.path.basename(__file__) or file in IGNORED_FILES:
                 continue
             
-            # Create a clean display path
             full_path = os.path.join(root, file)
             rel_path = os.path.relpath(full_path, root_path)
-            
             output.append(f"{subindent}{file}  <-- Full Path: {rel_path}")
 
     return "\n".join(output)
 
 def execute_moves(json_data, root_path):
     """
-    Parses the JSON and asks user for confirmation on moves.
+    Parses JSON and moves files/folders.
     """
     try:
         data = json.loads(json_data)
         moves = data.get("moves", [])
     except json.JSONDecodeError as e:
-        print(f"\n[ERROR] Invalid JSON provided: {e}")
+        print(f"\n[ERROR] Invalid JSON: {e}")
         return
 
     if not moves:
-        print("\n[INFO] No moves found in the JSON response.")
+        print("\n[INFO] No moves found.")
         return
 
-    print(f"\nAI suggested {len(moves)} moves. Let's review them:")
+    print(f"\nAI suggested {len(moves)} moves. Let's review:")
     print("-" * 50)
 
     for i, move in enumerate(moves, 1):
-        # Construct absolute paths to be safe
         rel_src = move['source']
         rel_dst = move['destination']
+        reason = move.get('reason', 'Organization')
         
         abs_src = os.path.join(root_path, rel_src)
         abs_dst = os.path.join(root_path, rel_dst)
-        reason = move.get('reason', 'Organization')
 
         if not os.path.exists(abs_src):
-            print(f"[{i}/{len(moves)}] SKIPPING (File not found): {rel_src}")
+            print(f"[{i}] SKIPPING (Not found): {rel_src}")
             continue
 
         print(f"\nMove {i}/{len(moves)}")
@@ -163,7 +172,7 @@ def execute_moves(json_data, root_path):
         print(f"  To:     {rel_dst}")
         print(f"  Reason: {reason}")
         
-        choice = input("  >>> Execute this move? (y/n): ").strip().lower()
+        choice = input("  >>> Execute? (y/n): ").strip().lower()
         
         if choice == 'y':
             try:
@@ -179,53 +188,45 @@ def execute_moves(json_data, root_path):
 # MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    print("--- AI FILE ORGANIZER (ALL-IN-ONE) ---")
+    print("--- AI ORGANIZER (DUAL MODE) ---")
     
-    # 0. Load Configuration
     load_config_from_env()
 
-    # 1. Get Target Directory
     while True:
-        target_dir = input("\nEnter the full path of the folder to organize: ").strip()
-        if os.path.isdir(target_dir):
-            break
-        print("Invalid directory. Please try again.")
+        target_dir = input("\nEnter full path of folder to organize: ").strip()
+        if os.path.isdir(target_dir): break
+        print("Invalid directory.")
 
-    # 2. Generate and Copy Prompt
+    print("\nSelect Scan Mode:")
+    print("1. FILES & FOLDERS (General Cleanup) - Sorts files into folders.")
+    print("2. FOLDERS ONLY (App/Project Organizer) - Groups app folders together.")
+    mode = input("Enter 1 or 2: ").strip()
+    
+    only_folders_mode = (mode == '2')
+
     print(f"\nScanning {target_dir}...")
-    prompt_text = generate_prompt_string(target_dir)
+    prompt = generate_prompt_string(target_dir, only_folders=only_folders_mode)
     
-    print("\n" + "="*20 + " GENERATED PROMPT " + "="*20)
-    print(prompt_text)
-    print("="*60)
+    copy_to_clipboard(prompt)
     
-    copy_to_clipboard(prompt_text)
-    
-    print("\nINSTRUCTIONS:")
-    print("1. Go to your AI chat.")
-    print("2. PASTE (Ctrl+V) the text I just copied to your clipboard.")
-    print("3. Copy the JSON code block the AI gives you back.")
-    print("4. Paste that JSON below.")
-    
-    # 3. Get JSON Input
-    print("\n--- PASTE JSON BELOW (Type 'DONE' on a new line when finished) ---")
+    print("\nSTEP 1: Paste the text from your clipboard into the AI.")
+    print("STEP 2: Copy the JSON response from the AI.")
+    print("STEP 3: Paste the JSON below (Type 'DONE' on a new line when finished).")
+    print("-" * 60)
     
     json_lines = []
     while True:
         try:
             line = input()
-            if line.strip().upper() == 'DONE':
-                break
+            if line.strip().upper() == 'DONE': break
             json_lines.append(line)
-        except EOFError:
-            break
+        except EOFError: break
             
-    full_json_input = "\n".join(json_lines)
+    full_json = "\n".join(json_lines)
 
-    # 4. Execute
-    if full_json_input.strip():
-        execute_moves(full_json_input, target_dir)
+    if full_json.strip():
+        execute_moves(full_json, target_dir)
     else:
-        print("No input received. Exiting.")
+        print("No input received.")
         
     input("\nPress Enter to exit...")
